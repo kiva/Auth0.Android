@@ -59,15 +59,14 @@ class CryptoUtil {
     private static final String AES_TRANSFORMATION = "AES/GCM/NOPADDING";
 
     private static final String ANDROID_KEY_STORE = "AndroidKeyStore";
-    private static final String ALGORITHM_RSA = "RSA";
     private static final String ALGORITHM_AES = "AES";
     private static final int AES_KEY_SIZE = 256;
-    private static final int RSA_KEY_SIZE = 2048;
 
     private final String KEY_ALIAS;
     private final String KEY_IV_ALIAS;
     private final Storage storage;
     private final Context context;
+    private final KeyStoreUtil keyStoreUtil;
 
     public CryptoUtil(@NonNull Context context, @NonNull Storage storage, @NonNull String keyAlias) {
         keyAlias = keyAlias.trim();
@@ -78,6 +77,7 @@ class CryptoUtil {
         this.KEY_IV_ALIAS = context.getPackageName() + "." + keyAlias + "_iv";
         this.context = context;
         this.storage = storage;
+        this.keyStoreUtil = new KeyStoreUtil(context, keyAlias);
     }
 
     /**
@@ -90,62 +90,25 @@ class CryptoUtil {
      */
     @VisibleForTesting
     KeyStore.PrivateKeyEntry getRSAKeyEntry() throws CryptoException, IncompatibleDeviceException {
+        return getRSAKeyEntry(KEY_ALIAS);
+    }
+
+    @VisibleForTesting
+    KeyStore.PrivateKeyEntry getRSAKeyEntry(@NonNull String keyAlias) throws CryptoException, IncompatibleDeviceException {
         try {
             KeyStore keyStore = KeyStore.getInstance(ANDROID_KEY_STORE);
             keyStore.load(null);
-            if (keyStore.containsAlias(KEY_ALIAS)) {
+            if (keyStore.containsAlias(keyAlias)) {
                 //Return existing key. On weird cases, the alias would be present but the key not
-                KeyStore.PrivateKeyEntry existingKey = getKeyEntryCompat(keyStore);
+                KeyStore.PrivateKeyEntry existingKey = keyStoreUtil.getKeyEntryCompat(keyStore, keyAlias);
                 if (existingKey != null) {
                     return existingKey;
                 }
             }
 
-            Calendar start = Calendar.getInstance();
-            Calendar end = Calendar.getInstance();
-            end.add(Calendar.YEAR, 25);
-            AlgorithmParameterSpec spec;
-            X500Principal principal = new X500Principal("CN=Auth0.Android,O=Auth0");
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                spec = new KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_DECRYPT | KeyProperties.PURPOSE_ENCRYPT)
-                        .setCertificateSubject(principal)
-                        .setCertificateSerialNumber(BigInteger.ONE)
-                        .setCertificateNotBefore(start.getTime())
-                        .setCertificateNotAfter(end.getTime())
-                        .setKeySize(RSA_KEY_SIZE)
-                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1)
-                        .setBlockModes(KeyProperties.BLOCK_MODE_ECB)
-                        .build();
-            } else {
-                //Following code is for API 18-22
-                //Generate new RSA KeyPair and save it on the KeyStore
-                KeyPairGeneratorSpec.Builder specBuilder = new KeyPairGeneratorSpec.Builder(context)
-                        .setAlias(KEY_ALIAS)
-                        .setSubject(principal)
-                        .setKeySize(RSA_KEY_SIZE)
-                        .setSerialNumber(BigInteger.ONE)
-                        .setStartDate(start.getTime())
-                        .setEndDate(end.getTime());
-
-                KeyguardManager kManager = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-                    //The next call can return null when the LockScreen is not configured
-                    Intent authIntent = kManager.createConfirmDeviceCredentialIntent(null, null);
-                    boolean keyguardEnabled = kManager.isKeyguardSecure() && authIntent != null;
-                    if (keyguardEnabled) {
-                        //If a ScreenLock is setup, protect this key pair.
-                        specBuilder.setEncryptionRequired();
-                    }
-                }
-                spec = specBuilder.build();
-            }
-
-            KeyPairGenerator generator = KeyPairGenerator.getInstance(ALGORITHM_RSA, ANDROID_KEY_STORE);
-            generator.initialize(spec);
-            generator.generateKeyPair();
-
-            return getKeyEntryCompat(keyStore);
+            // use only the new key alias when generating a new key store
+            keyStoreUtil.generateKeyStore(KEY_ALIAS);
+            return keyStoreUtil.getKeyEntryCompat(keyStore, KEY_ALIAS);
         } catch (CertificateException | InvalidAlgorithmParameterException | NoSuchProviderException | NoSuchAlgorithmException | KeyStoreException | ProviderException e) {
             /*
              * This exceptions are safe to be ignored:
@@ -190,35 +153,6 @@ class CryptoUtil {
     }
 
     /**
-     * Helper method compatible with older Android versions to load the Private Key Entry from
-     * the KeyStore using the {@link #KEY_ALIAS}.
-     *
-     * @param keyStore the KeyStore instance. Must be initialized (loaded).
-     * @return the key entry stored in the KeyStore or null if not present.
-     * @throws KeyStoreException           if the keystore was not initialized.
-     * @throws NoSuchAlgorithmException    if device is not compatible with RSA algorithm. RSA is available since API 18.
-     * @throws UnrecoverableEntryException if key cannot be recovered. Probably because it was invalidated by a Lock Screen change.
-     */
-    private KeyStore.PrivateKeyEntry getKeyEntryCompat(KeyStore keyStore) throws KeyStoreException, NoSuchAlgorithmException, UnrecoverableEntryException {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-            return (KeyStore.PrivateKeyEntry) keyStore.getEntry(KEY_ALIAS, null);
-        }
-
-        //Following code is for API 28+
-        PrivateKey privateKey = (PrivateKey) keyStore.getKey(KEY_ALIAS, null);
-
-        if (privateKey == null) {
-            return (KeyStore.PrivateKeyEntry) keyStore.getEntry(KEY_ALIAS, null);
-        }
-
-        Certificate certificate = keyStore.getCertificate(KEY_ALIAS);
-        if (certificate == null) {
-            return null;
-        }
-        return new KeyStore.PrivateKeyEntry(privateKey, new Certificate[]{certificate});
-    }
-
-    /**
      * Removes the RSA keys generated in a previous execution.
      * Used when we want the next call to {@link #encrypt(byte[])} or {@link #decrypt(byte[])}
      * to recreate the keys.
@@ -228,6 +162,9 @@ class CryptoUtil {
             KeyStore keyStore = KeyStore.getInstance(ANDROID_KEY_STORE);
             keyStore.load(null);
             keyStore.deleteEntry(KEY_ALIAS);
+            if (keyStore.containsAlias(keyStoreUtil.legacyKeyAlias())) {
+                keyStore.deleteEntry(keyStoreUtil.legacyKeyAlias());
+            }
             Log.d(TAG, "Deleting the existing RSA key pair from the KeyStore.");
         } catch (KeyStoreException | CertificateException | IOException | NoSuchAlgorithmException e) {
             Log.e(TAG, "Failed to remove the RSA KeyEntry from the Android KeyStore.", e);
@@ -242,6 +179,8 @@ class CryptoUtil {
     private void deleteAESKeys() {
         storage.remove(KEY_ALIAS);
         storage.remove(KEY_IV_ALIAS);
+        storage.remove(keyStoreUtil.legacyKeyAlias());
+        storage.remove(keyStoreUtil.legacyKeyIVAlias());
     }
 
     /**
@@ -349,7 +288,20 @@ class CryptoUtil {
      */
     @VisibleForTesting
     byte[] getAESKey() throws IncompatibleDeviceException, CryptoException {
-        final String encodedEncryptedAES = storage.retrieveString(KEY_ALIAS);
+        return getAESKey(KEY_ALIAS);
+    }
+
+    /**
+     * Attempts to recover the existing AES Key or generates a new one if none is found.
+     *
+     * @param keyAlias The lookup key
+     * @return a valid  AES Key bytes
+     * @throws IncompatibleDeviceException in the event the device can't understand the cryptographic settings required
+     * @throws CryptoException             if the stored RSA keys can't be recovered and should be deemed invalid
+     */
+    @VisibleForTesting
+    byte[] getAESKey(@NonNull String keyAlias) throws IncompatibleDeviceException, CryptoException {
+        final String encodedEncryptedAES = storage.retrieveString(keyAlias);
         if (encodedEncryptedAES != null) {
             //Return existing key
             byte[] encryptedAES = Base64.decode(encodedEncryptedAES, Base64.DEFAULT);
@@ -397,16 +349,37 @@ class CryptoUtil {
      */
     public byte[] decrypt(byte[] encryptedInput) throws CryptoException, IncompatibleDeviceException {
         try {
-            SecretKey key = new SecretKeySpec(getAESKey(), ALGORITHM_AES);
+            final boolean hasLegacyEntry = keyStoreUtil.hasLegacyCredential()
+                    && !TextUtils.isEmpty(storage.retrieveString(keyStoreUtil.legacyKeyIVAlias()));
+            final String keyAlias;
+            final String keyIVAlias;
+            if (hasLegacyEntry) {
+                keyAlias = keyStoreUtil.legacyKeyAlias();
+                keyIVAlias = keyStoreUtil.legacyKeyIVAlias();
+            } else {
+                keyAlias = KEY_ALIAS;
+                keyIVAlias = KEY_IV_ALIAS;
+            }
+
+            SecretKey key = new SecretKeySpec(getAESKey(keyAlias), ALGORITHM_AES);
             Cipher cipher = Cipher.getInstance(AES_TRANSFORMATION);
-            String encodedIV = storage.retrieveString(KEY_IV_ALIAS);
+            String encodedIV = storage.retrieveString(keyIVAlias);
             if (TextUtils.isEmpty(encodedIV)) {
                 //AES key was JUST generated. If anything existed before, should be encrypted again first.
                 throw new CryptoException("The encryption keys changed recently. You need to re-encrypt something first.", null);
             }
             byte[] iv = Base64.decode(encodedIV, Base64.DEFAULT);
             cipher.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(iv));
-            return cipher.doFinal(encryptedInput);
+            final byte[] output = cipher.doFinal(encryptedInput);
+
+            if (hasLegacyEntry) {
+                // Re-encrypt so that the credentials are stored using the new key alias pattern.
+                // The final step of encrypt removes the legacy keys from storage, so we should only
+                // hit this path once
+                encrypt(output);
+            }
+
+            return output;
         } catch (NoSuchAlgorithmException | NoSuchPaddingException | InvalidKeyException | InvalidAlgorithmParameterException e) {
             /*
              * This exceptions are safe to be ignored:
@@ -455,6 +428,8 @@ class CryptoUtil {
             byte[] encodedIV = Base64.encode(cipher.getIV(), Base64.DEFAULT);
             //Save IV for Decrypt stage
             storage.store(KEY_IV_ALIAS, new String(encodedIV));
+            storage.remove(keyStoreUtil.legacyKeyAlias());
+            storage.remove(keyStoreUtil.legacyKeyIVAlias());
             return encrypted;
         } catch (NoSuchAlgorithmException | NoSuchPaddingException | InvalidKeyException e) {
             /*

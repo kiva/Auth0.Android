@@ -75,7 +75,7 @@ import static org.powermock.api.mockito.PowerMockito.mock;
  */
 @RequiresApi(api = Build.VERSION_CODES.KITKAT)
 @RunWith(PowerMockRunner.class)
-@PrepareForTest({CryptoUtil.class, KeyGenerator.class, TextUtils.class, Build.VERSION.class, Base64.class, Cipher.class, Log.class})
+@PrepareForTest({CryptoUtil.class, KeyStoreUtil.class, KeyGenerator.class, TextUtils.class, Build.VERSION.class, Base64.class, Cipher.class, Log.class})
 @Config(sdk = 22)
 public class CryptoUtilTest {
 
@@ -1081,7 +1081,7 @@ public class CryptoUtilTest {
         byte[] decryptedData = new byte[]{0, 1, 2, 3, 4, 5};
         String encodedIv = "iv-data";
 
-        doReturn(aesKey).when(cryptoUtil).getAESKey();
+        doReturn(aesKey).when(cryptoUtil).getAESKey(anyString());
         doReturn(decryptedData).when(aesCipher).doFinal(data);
         PowerMockito.when(aesCipher.doFinal(data)).thenReturn(decryptedData);
         PowerMockito.when(storage.retrieveString(KEY_ALIAS + "_iv")).thenReturn(encodedIv);
@@ -1089,7 +1089,6 @@ public class CryptoUtilTest {
         PowerMockito.when(Base64.decode(encodedIv, Base64.DEFAULT)).thenReturn(encodedIv.getBytes());
 
         final byte[] decrypted = cryptoUtil.decrypt(data);
-
 
         Mockito.verify(aesCipher).init(eq(Cipher.DECRYPT_MODE), secretKeyCaptor.capture(), ivParameterSpecCaptor.capture());
         assertThat(secretKeyCaptor.getValue(), is(notNullValue()));
@@ -1117,7 +1116,7 @@ public class CryptoUtilTest {
     public void shouldThrowOnCryptoExceptionOnAESKeyReadingWhenTryingToAESDecrypt() {
         exception.expect(CryptoException.class);
 
-        doThrow(new CryptoException(null, null)).when(cryptoUtil).getAESKey();
+        doThrow(new CryptoException(null, null)).when(cryptoUtil).getAESKey(anyString());
         cryptoUtil.decrypt(new byte[0]);
     }
 
@@ -1139,14 +1138,14 @@ public class CryptoUtilTest {
         exception.expect(IncompatibleDeviceException.class);
         exception.expectMessage("The device is not compatible with the CryptoUtil class");
 
-        doThrow(new IncompatibleDeviceException(null)).when(cryptoUtil).getAESKey();
+        doThrow(new IncompatibleDeviceException(null)).when(cryptoUtil).getAESKey(anyString());
         cryptoUtil.decrypt(new byte[0]);
     }
 
     @Test
     public void shouldThrowOnNoSuchPaddingExceptionWhenTryingToAESDecrypt() throws Exception {
         exception.expect(IncompatibleDeviceException.class);
-        doReturn(new byte[]{11, 22, 33}).when(cryptoUtil).getAESKey();
+        doReturn(new byte[]{11, 22, 33}).when(cryptoUtil).getAESKey(anyString());
 
         PowerMockito.mockStatic(Cipher.class);
         PowerMockito.when(Cipher.getInstance(AES_TRANSFORMATION)).thenThrow(new NoSuchPaddingException());
@@ -1157,7 +1156,7 @@ public class CryptoUtilTest {
     @Test
     public void shouldThrowOnNoSuchAlgorithmExceptionWhenTryingToAESDecrypt() throws Exception {
         exception.expect(IncompatibleDeviceException.class);
-        doReturn(new byte[]{11, 22, 33}).when(cryptoUtil).getAESKey();
+        doReturn(new byte[]{11, 22, 33}).when(cryptoUtil).getAESKey(anyString());
 
         PowerMockito.mockStatic(Cipher.class);
         PowerMockito.when(Cipher.getInstance(AES_TRANSFORMATION)).thenThrow(new NoSuchAlgorithmException());
@@ -1170,7 +1169,7 @@ public class CryptoUtilTest {
         exception.expect(CryptoException.class);
         exception.expectMessage("The encryption keys changed recently. You need to re-encrypt something first.");
 
-        doReturn(new byte[]{11, 22, 33}).when(cryptoUtil).getAESKey();
+        doReturn(new byte[]{11, 22, 33}).when(cryptoUtil).getAESKey(anyString());
         PowerMockito.mockStatic(Cipher.class);
         PowerMockito.when(Cipher.getInstance(AES_TRANSFORMATION)).thenReturn(aesCipher);
         PowerMockito.when(storage.retrieveString(KEY_ALIAS + "_iv")).thenReturn("");
@@ -1188,7 +1187,7 @@ public class CryptoUtilTest {
         ArgumentCaptor<IvParameterSpec> ivParameterSpecArgumentCaptor = ArgumentCaptor.forClass(IvParameterSpec.class);
 
         try {
-            doReturn(aesKeyBytes).when(cryptoUtil).getAESKey();
+            doReturn(aesKeyBytes).when(cryptoUtil).getAESKey(anyString());
             PowerMockito.mockStatic(Cipher.class);
             PowerMockito.when(Cipher.getInstance(AES_TRANSFORMATION)).thenReturn(aesCipher);
             PowerMockito.when(storage.retrieveString(KEY_ALIAS + "_iv")).thenReturn("a_valid_iv");
@@ -1218,7 +1217,7 @@ public class CryptoUtilTest {
         ArgumentCaptor<IvParameterSpec> ivParameterSpecArgumentCaptor = ArgumentCaptor.forClass(IvParameterSpec.class);
 
         try {
-            doReturn(aesKeyBytes).when(cryptoUtil).getAESKey();
+            doReturn(aesKeyBytes).when(cryptoUtil).getAESKey(anyString());
             PowerMockito.mockStatic(Cipher.class);
             PowerMockito.when(Cipher.getInstance(AES_TRANSFORMATION)).thenReturn(aesCipher);
             PowerMockito.when(storage.retrieveString(KEY_ALIAS + "_iv")).thenReturn("a_valid_iv");
@@ -1246,7 +1245,7 @@ public class CryptoUtilTest {
         byte[] aesKeyBytes = new byte[]{11, 22, 33};
         byte[] ivBytes = new byte[]{99, 22};
 
-        doReturn(aesKeyBytes).when(cryptoUtil).getAESKey();
+        doReturn(aesKeyBytes).when(cryptoUtil).getAESKey(anyString());
         PowerMockito.mockStatic(Cipher.class);
         PowerMockito.when(Cipher.getInstance(AES_TRANSFORMATION)).thenReturn(aesCipher);
         PowerMockito.when(storage.retrieveString(KEY_ALIAS + "_iv")).thenReturn("a_valid_iv");
@@ -1269,7 +1268,7 @@ public class CryptoUtilTest {
         exception.expectMessage("The AES encrypted input is corrupted and cannot be recovered. Please discard it.");
 
         byte[] aesKeyBytes = new byte[]{11, 22, 33};
-        doReturn(aesKeyBytes).when(cryptoUtil).getAESKey();
+        doReturn(aesKeyBytes).when(cryptoUtil).getAESKey(anyString());
         PowerMockito.mockStatic(Cipher.class);
         PowerMockito.when(Cipher.getInstance(AES_TRANSFORMATION)).thenReturn(aesCipher);
         PowerMockito.when(storage.retrieveString(KEY_ALIAS + "_iv")).thenReturn("a_valid_iv");
