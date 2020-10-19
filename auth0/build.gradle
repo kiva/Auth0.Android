@@ -32,7 +32,8 @@ android {
         targetSdkVersion 28
         versionCode 1
         versionName project.version
-        buildConfigField "String", "LIBRARY_NAME", "\"$project.rootProject.name\""
+        buildConfigField "String", "LIBRARY_NAME", "\"$project.name\""
+        buildConfigField "String", "VERSION_NAME", "\"$project.version\""
         consumerProguardFiles '../proguard/proguard-gson.pro', '../proguard/proguard-okio.pro'
     }
     lintOptions {
