@@ -21,30 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-
-plugins {
-    id "com.auth0.gradle.oss-library.android" version "0.10.0"
-}
-
 logger.lifecycle("Using version ${version} for ${name}")
-
-oss {
-    name 'Auth0.Android'
-    repository 'Auth0.Android'
-    organization 'auth0'
-    description 'Android toolkit for Auth0 API'
-
-    developers {
-        auth0 {
-            displayName = 'Auth0'
-            email = 'oss@auth0.com'
-        }
-        lbalmaceda {
-            displayName = 'Luciano Balmaceda'
-            email = 'luciano.balmaceda@auth0.com'
-        }
-    }
-}
+apply plugin: 'com.android.library'
 
 android {
     compileSdkVersion 28
