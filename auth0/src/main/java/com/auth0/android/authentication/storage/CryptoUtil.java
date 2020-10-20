@@ -1,24 +1,18 @@
 package com.auth0.android.authentication.storage;
 
-import android.app.KeyguardManager;
 import android.content.Context;
-import android.content.Intent;
 import android.os.Build;
-import android.security.KeyPairGeneratorSpec;
-import android.security.keystore.KeyGenParameterSpec;
-import android.security.keystore.KeyProperties;
-import androidx.annotation.NonNull;
-import androidx.annotation.RequiresApi;
-import androidx.annotation.VisibleForTesting;
 import android.text.TextUtils;
 import android.util.Base64;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
+import androidx.annotation.VisibleForTesting;
+
 import java.io.IOException;
-import java.math.BigInteger;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
-import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
@@ -28,8 +22,6 @@ import java.security.ProviderException;
 import java.security.UnrecoverableEntryException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
-import java.security.spec.AlgorithmParameterSpec;
-import java.util.Calendar;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -39,7 +31,6 @@ import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
-import javax.security.auth.x500.X500Principal;
 
 /**
  * Created by lbalmaceda on 8/24/17.
@@ -65,8 +56,8 @@ class CryptoUtil {
     private final String KEY_ALIAS;
     private final String KEY_IV_ALIAS;
     private final Storage storage;
-    private final Context context;
     private final KeyStoreUtil keyStoreUtil;
+
 
     public CryptoUtil(@NonNull Context context, @NonNull Storage storage, @NonNull String keyAlias) {
         keyAlias = keyAlias.trim();
@@ -75,7 +66,6 @@ class CryptoUtil {
         }
         this.KEY_ALIAS = context.getPackageName() + "." + keyAlias;
         this.KEY_IV_ALIAS = context.getPackageName() + "." + keyAlias + "_iv";
-        this.context = context;
         this.storage = storage;
         this.keyStoreUtil = new KeyStoreUtil(context, keyAlias);
     }
@@ -148,8 +138,9 @@ class CryptoUtil {
             deleteRSAKeys();
             deleteAESKeys();
             throw new CryptoException("The existing RSA key pair could not be recovered and has been deleted. " +
-                    "This occasionally happens when the Lock Screen settings are changed. You can safely retry this operation.", e);
+                "This occasionally happens when the Lock Screen settings are changed. You can safely retry this operation.", e);
         }
+
     }
 
     /**
@@ -195,7 +186,16 @@ class CryptoUtil {
     @VisibleForTesting
     byte[] RSADecrypt(byte[] encryptedInput) throws IncompatibleDeviceException, CryptoException {
         try {
-            PrivateKey privateKey = getRSAKeyEntry().getPrivateKey();
+            final boolean hasLegacyEntry = keyStoreUtil.hasLegacyCredential()
+                && !TextUtils.isEmpty(storage.retrieveString(keyStoreUtil.legacyKeyIVAlias()));
+            final String keyAlias;
+            if (hasLegacyEntry) {
+                keyAlias = keyStoreUtil.legacyKeyAlias();
+            } else {
+                keyAlias = KEY_ALIAS;
+            }
+
+            PrivateKey privateKey = getRSAKeyEntry(keyAlias).getPrivateKey();
             Cipher cipher = Cipher.getInstance(RSA_TRANSFORMATION);
             cipher.init(Cipher.DECRYPT_MODE, privateKey);
             return cipher.doFinal(encryptedInput);
@@ -230,6 +230,7 @@ class CryptoUtil {
             deleteAESKeys();
             throw new CryptoException("The RSA encrypted input is corrupted and cannot be recovered. Please discard it.", e);
         }
+
     }
 
     /**
@@ -247,7 +248,8 @@ class CryptoUtil {
             Certificate certificate = getRSAKeyEntry().getCertificate();
             Cipher cipher = Cipher.getInstance(RSA_TRANSFORMATION);
             cipher.init(Cipher.ENCRYPT_MODE, certificate);
-            return cipher.doFinal(decryptedInput);
+            final byte[] decrypted = cipher.doFinal(decryptedInput);
+            return decrypted;
         } catch (NoSuchAlgorithmException | NoSuchPaddingException | InvalidKeyException e) {
             /*
              * This exceptions are safe to be ignored:
@@ -277,6 +279,7 @@ class CryptoUtil {
             deleteAESKeys();
             throw new CryptoException("The RSA decrypted input is invalid.", e);
         }
+
     }
 
     /**
@@ -350,7 +353,7 @@ class CryptoUtil {
     public byte[] decrypt(byte[] encryptedInput) throws CryptoException, IncompatibleDeviceException {
         try {
             final boolean hasLegacyEntry = keyStoreUtil.hasLegacyCredential()
-                    && !TextUtils.isEmpty(storage.retrieveString(keyStoreUtil.legacyKeyIVAlias()));
+                && !TextUtils.isEmpty(storage.retrieveString(keyStoreUtil.legacyKeyIVAlias()));
             final String keyAlias;
             final String keyIVAlias;
             if (hasLegacyEntry) {
@@ -360,23 +363,27 @@ class CryptoUtil {
                 keyAlias = KEY_ALIAS;
                 keyIVAlias = KEY_IV_ALIAS;
             }
-
             SecretKey key = new SecretKeySpec(getAESKey(keyAlias), ALGORITHM_AES);
             Cipher cipher = Cipher.getInstance(AES_TRANSFORMATION);
             String encodedIV = storage.retrieveString(keyIVAlias);
+
             if (TextUtils.isEmpty(encodedIV)) {
                 //AES key was JUST generated. If anything existed before, should be encrypted again first.
                 throw new CryptoException("The encryption keys changed recently. You need to re-encrypt something first.", null);
             }
             byte[] iv = Base64.decode(encodedIV, Base64.DEFAULT);
             cipher.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(iv));
-            final byte[] output = cipher.doFinal(encryptedInput);
+            byte[] output = cipher.doFinal(encryptedInput);
 
             if (hasLegacyEntry) {
-                // Re-encrypt so that the credentials are stored using the new key alias pattern.
-                // The final step of encrypt removes the legacy keys from storage, so we should only
-                // hit this path once
-                encrypt(output);
+                // first we must delete the keys since we have successfully decrypted the data
+                // using the legacy key alias
+                deleteAESKeys();
+                deleteRSAKeys();
+
+                // Now we must e-encrypt with the new key alias pattern. Since we deleted the
+                // legacy keys from storage and the keystore, we should only hit this path once
+                throw new NeedsMigrationException(output);
             }
 
             return output;
@@ -427,9 +434,8 @@ class CryptoUtil {
             byte[] encrypted = cipher.doFinal(decryptedInput);
             byte[] encodedIV = Base64.encode(cipher.getIV(), Base64.DEFAULT);
             //Save IV for Decrypt stage
-            storage.store(KEY_IV_ALIAS, new String(encodedIV));
-            storage.remove(keyStoreUtil.legacyKeyAlias());
-            storage.remove(keyStoreUtil.legacyKeyIVAlias());
+            final String encodedIVString = new String(encodedIV);
+            storage.store(KEY_IV_ALIAS, encodedIVString);
             return encrypted;
         } catch (NoSuchAlgorithmException | NoSuchPaddingException | InvalidKeyException e) {
             /*
@@ -461,5 +467,4 @@ class CryptoUtil {
             throw new CryptoException("The AES decrypted input is invalid.", e);
         }
     }
-
 }
