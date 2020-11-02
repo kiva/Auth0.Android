@@ -5,11 +5,11 @@ import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.annotation.RequiresApi;
-import android.support.annotation.VisibleForTesting;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
+import androidx.annotation.VisibleForTesting;
 import android.util.Base64;
 import android.util.Log;
 
@@ -52,6 +52,7 @@ public class SecureCredentialsManager {
     private final Gson gson;
     private final JWTDecoder jwtDecoder;
     private Clock clock;
+    private final Object credentialsLock;
 
     //Changeable by the user
     private boolean authenticateBeforeDecrypt;
@@ -72,6 +73,7 @@ public class SecureCredentialsManager {
         this.authenticateBeforeDecrypt = false;
         this.jwtDecoder = jwtDecoder;
         this.clock = new ClockImpl();
+        this.credentialsLock = new Object();
     }
 
     /**
@@ -241,73 +243,89 @@ public class SecureCredentialsManager {
         String encryptedEncoded = storage.retrieveString(KEY_CREDENTIALS);
         Long expiresAt = storage.retrieveLong(KEY_EXPIRES_AT);
         Boolean canRefresh = storage.retrieveBoolean(KEY_CAN_REFRESH);
-        String keyAliasUsed = storage.retrieveString(KEY_CRYPTO_ALIAS);
-        return KEY_ALIAS.equals(keyAliasUsed) &&
-                !(isEmpty(encryptedEncoded) || expiresAt == null ||
+        return !(isEmpty(encryptedEncoded) || expiresAt == null ||
                         expiresAt <= getCurrentTimeInMillis() && (canRefresh == null || !canRefresh));
     }
 
     private void continueGetCredentials(final BaseCallback<Credentials, CredentialsManagerException> callback) {
-        String encryptedEncoded = storage.retrieveString(KEY_CREDENTIALS);
-        byte[] encrypted = Base64.decode(encryptedEncoded, Base64.DEFAULT);
+        synchronized (credentialsLock) {
+            String encryptedEncoded = storage.retrieveString(KEY_CREDENTIALS);
+            byte[] encrypted = Base64.decode(encryptedEncoded, Base64.DEFAULT);
 
-        String json;
-        try {
-            json = new String(crypto.decrypt(encrypted));
-        } catch (IncompatibleDeviceException e) {
-            callback.onFailure(new CredentialsManagerException(String.format("This device is not compatible with the %s class.", SecureCredentialsManager.class.getSimpleName()), e));
-            decryptCallback = null;
-            return;
-        } catch (CryptoException e) {
-            //If keys were invalidated, existing credentials will not be recoverable.
-            clearCredentials();
-            callback.onFailure(new CredentialsManagerException("A change on the Lock Screen security settings have deemed the encryption keys invalid and have been recreated. " +
+            boolean needsMigration = false;
+            String json;
+            try {
+                json = new String(crypto.decrypt(encrypted));
+            } catch (NeedsMigrationException e) {
+                // we must re-encrypt before returning these credentials
+                json = new String(e.getLegacyEncodedData());
+                needsMigration = true;
+            } catch (IncompatibleDeviceException e) {
+                callback.onFailure(new CredentialsManagerException(String.format("This device is not compatible with the %s class.", SecureCredentialsManager.class.getSimpleName()), e));
+                decryptCallback = null;
+                return;
+            } catch (CryptoException e) {
+                //If keys were invalidated, existing credentials will not be recoverable.
+                clearCredentials();
+                callback.onFailure(new CredentialsManagerException("A change on the Lock Screen security settings have deemed the encryption keys invalid and have been recreated. " +
                     "Any previously stored content is now lost. Please, try saving the credentials again.", e));
-            decryptCallback = null;
-            return;
-        }
-        final Credentials credentials = gson.fromJson(json, Credentials.class);
-        Long expiresAt = storage.retrieveLong(KEY_EXPIRES_AT);
-        if (isEmpty(credentials.getAccessToken()) && isEmpty(credentials.getIdToken()) || expiresAt == null) {
-            callback.onFailure(new CredentialsManagerException("No Credentials were previously set."));
-            decryptCallback = null;
-            return;
-        }
-        if (expiresAt > getCurrentTimeInMillis()) {
-            callback.onSuccess(credentials);
-            decryptCallback = null;
-            return;
-        }
-        if (credentials.getRefreshToken() == null) {
-            callback.onFailure(new CredentialsManagerException("No Credentials were previously set."));
-            decryptCallback = null;
-            return;
-        }
-
-        Log.d(TAG, "Credentials have expired. Renewing them now...");
-        apiClient.renewAuth(credentials.getRefreshToken()).start(new AuthenticationCallback<Credentials>() {
-            @Override
-            public void onSuccess(@Nullable Credentials fresh) {
-                //non-empty refresh token for refresh token rotation scenarios
-                //noinspection ConstantConditions
-                String updatedRefreshToken = isEmpty(fresh.getRefreshToken()) ? credentials.getRefreshToken() : fresh.getRefreshToken();
-                Credentials refreshed = new Credentials(fresh.getIdToken(), fresh.getAccessToken(), fresh.getType(), updatedRefreshToken, fresh.getExpiresAt(), fresh.getScope());
-                saveCredentials(refreshed);
-                callback.onSuccess(refreshed);
                 decryptCallback = null;
+                return;
+            }
+            final Credentials credentials = gson.fromJson(json, Credentials.class);
+            Long expiresAt = storage.retrieveLong(KEY_EXPIRES_AT);
+            if (isEmpty(credentials.getAccessToken()) && isEmpty(credentials.getIdToken()) || expiresAt == null) {
+                callback.onFailure(new CredentialsManagerException("No Credentials were previously set."));
+                decryptCallback = null;
+                return;
             }
 
-            @Override
-            public void onFailure(@NonNull AuthenticationException error) {
-                callback.onFailure(new CredentialsManagerException("An error occurred while trying to use the Refresh Token to renew the Credentials.", error));
-                decryptCallback = null;
+            if (needsMigration) {
+                try {
+                    // re-save the credentials to migrate secure storage to the new key alias pattern
+                    saveCredentials(credentials);
+                } catch (CryptoException e) {
+                    // re-try in case this was caused by a recoverable error
+                    saveCredentials(credentials);
+                }
+                return;
             }
-        });
+
+            if (expiresAt > getCurrentTimeInMillis()) {
+                callback.onSuccess(credentials);
+                decryptCallback = null;
+                return;
+            }
+            if (credentials.getRefreshToken() == null) {
+                callback.onFailure(new CredentialsManagerException("No Credentials were previously set."));
+                decryptCallback = null;
+                return;
+            }
+
+            Log.d(TAG, "Credentials have expired. Renewing them now...");
+            apiClient.renewAuth(credentials.getRefreshToken()).start(new AuthenticationCallback<Credentials>() {
+                @Override
+                public void onSuccess(@Nullable Credentials fresh) {
+                    //non-empty refresh token for refresh token rotation scenarios
+                    //noinspection ConstantConditions
+                    String updatedRefreshToken = isEmpty(fresh.getRefreshToken()) ? credentials.getRefreshToken() : fresh.getRefreshToken();
+                    Credentials refreshed = new Credentials(fresh.getIdToken(), fresh.getAccessToken(), fresh.getType(), updatedRefreshToken, fresh.getExpiresAt(), fresh.getScope());
+                    saveCredentials(refreshed);
+                    callback.onSuccess(refreshed);
+                    decryptCallback = null;
+                }
+
+                @Override
+                public void onFailure(@NonNull AuthenticationException error) {
+                    callback.onFailure(new CredentialsManagerException("An error occurred while trying to use the Refresh Token to renew the Credentials.", error));
+                    decryptCallback = null;
+                }
+            });
+        }
     }
 
     @VisibleForTesting
     long getCurrentTimeInMillis() {
         return clock.getCurrentTimeMillis();
     }
-
 }
