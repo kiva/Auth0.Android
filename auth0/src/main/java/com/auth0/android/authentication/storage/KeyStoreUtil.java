@@ -79,7 +79,6 @@ class KeyStoreUtil {
      * @throws UnrecoverableEntryException if key cannot be recovered. Probably because it was invalidated by a Lock Screen change.
      */
     public KeyStore.PrivateKeyEntry getKeyEntryCompat(@NonNull KeyStore keyStore, @NonNull String keyAlias) throws KeyStoreException, NoSuchAlgorithmException, UnrecoverableEntryException {
-        Log.d("AUTH0_DEBUG", "getKeyEntryCompat " + keyAlias);
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
             return (KeyStore.PrivateKeyEntry) keyStore.getEntry(keyAlias, null);
         }
