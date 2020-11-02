@@ -31,9 +31,8 @@ android {
         minSdkVersion 15
         targetSdkVersion 28
         versionCode 1
-        versionName project.version
+        versionName "1.29.0-local"
         buildConfigField "String", "LIBRARY_NAME", "\"$project.name\""
-        buildConfigField "String", "VERSION_NAME", "\"$project.version\""
         consumerProguardFiles '../proguard/proguard-gson.pro', '../proguard/proguard-okio.pro'
     }
     lintOptions {
