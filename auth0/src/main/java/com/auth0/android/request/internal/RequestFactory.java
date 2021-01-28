@@ -28,6 +28,7 @@ import android.support.annotation.NonNull;
 
 import com.auth0.android.Auth0Exception;
 import com.auth0.android.request.AuthRequest;
+import com.auth0.android.request.ChallengeRequest;
 import com.auth0.android.request.ErrorBuilder;
 import com.auth0.android.request.ParameterizableRequest;
 import com.auth0.android.util.Telemetry;
@@ -73,6 +74,13 @@ public class RequestFactory {
     @NonNull
     public AuthRequest authenticationPOST(@NonNull HttpUrl url, @NonNull OkHttpClient client, @NonNull Gson gson) {
         BaseAuthenticationRequest request = createAuthenticationRequest(url, client, gson);
+        addMetrics(request);
+        return request;
+    }
+
+    @NonNull
+    public ChallengeRequest challengePOST(@NonNull HttpUrl url, @NonNull OkHttpClient client, @NonNull Gson gson) {
+        BaseChallengeRequest request = new BaseChallengeRequest(url, client, gson, "POST");
         addMetrics(request);
         return request;
     }

@@ -67,6 +67,13 @@ public class ParameterBuilder {
     public static final String GRANT_TYPE_PASSWORDLESS_OTP = "http://auth0.com/oauth/grant-type/passwordless/otp";
     public static final String GRANT_TYPE_TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange";
 
+    /**
+     * Kiva additions: MOB-1274
+     */
+    public static final String KIVA_GRANT_TYPE_MFA_OOB = "http://auth0.com/oauth/grant-type/mfa-oob";
+    public static final String KIVA_GRANT_TYPE_MFA_RECOVERY_CODE = "http://auth0.com/oauth/grant-type/mfa-recovery-code";
+
+
     public static final String SCOPE_OPENID = "openid";
     public static final String SCOPE_OFFLINE_ACCESS = "openid offline_access";
 

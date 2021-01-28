@@ -28,6 +28,7 @@ import android.content.Context;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.annotation.VisibleForTesting;
+import android.text.TextUtils;
 
 import com.auth0.android.Auth0;
 import com.auth0.android.authentication.request.DatabaseConnectionRequest;
@@ -37,6 +38,7 @@ import com.auth0.android.authentication.request.SignUpRequest;
 import com.auth0.android.authentication.request.TokenRequest;
 import com.auth0.android.request.AuthRequest;
 import com.auth0.android.request.AuthenticationRequest;
+import com.auth0.android.request.ChallengeRequest;
 import com.auth0.android.request.ErrorBuilder;
 import com.auth0.android.request.ParameterizableRequest;
 import com.auth0.android.request.internal.AuthenticationErrorBuilder;
@@ -54,6 +56,7 @@ import com.squareup.okhttp.HttpUrl;
 import com.squareup.okhttp.OkHttpClient;
 
 import java.security.PublicKey;
+import java.util.List;
 import java.util.Map;
 
 import static com.auth0.android.authentication.ParameterBuilder.GRANT_TYPE_AUTHORIZATION_CODE;
@@ -63,6 +66,8 @@ import static com.auth0.android.authentication.ParameterBuilder.GRANT_TYPE_PASSW
 import static com.auth0.android.authentication.ParameterBuilder.GRANT_TYPE_PASSWORD_REALM;
 import static com.auth0.android.authentication.ParameterBuilder.GRANT_TYPE_TOKEN_EXCHANGE;
 import static com.auth0.android.authentication.ParameterBuilder.ID_TOKEN_KEY;
+import static com.auth0.android.authentication.ParameterBuilder.KIVA_GRANT_TYPE_MFA_OOB;
+import static com.auth0.android.authentication.ParameterBuilder.KIVA_GRANT_TYPE_MFA_RECOVERY_CODE;
 import static com.auth0.android.authentication.ParameterBuilder.SCOPE_OPENID;
 
 /**
@@ -107,6 +112,19 @@ public class AuthenticationAPIClient {
     private static final String HEADER_AUTHORIZATION = "Authorization";
     private static final String WELL_KNOWN_PATH = ".well-known";
     private static final String JWKS_FILE_PATH = "jwks.json";
+
+    /**
+     * Kiva additions: MOB-1274
+     */
+    private static final String KIVA_OOB_CODE = "oob_code";
+    private static final String KIVA_OOB_CHANNEL = "oob_channel";
+    private static final String KIVA_BINDING_CODE = "binding_code";
+    private static final String KIVA_RECOVERY_CODE = "recovery_code";
+    private static final String KIVA_MFA_PATH = "mfa";
+    private static final String KIVA_AUTHENTICATOR_ID = "authenticator_id";
+    private static final String KIVA_CHALLENGE_PATH = "challenge";
+    private static final String KIVA_CHALLENGE_TYPE = "challenge_type";
+
 
     private final Auth0 auth0;
     private final OkHttpClient client;
@@ -287,6 +305,87 @@ public class AuthenticationAPIClient {
 
         return loginWithToken(parameters);
     }
+
+    /**
+     * Verifies multi-factor authentication (MFA) using an out-of-band (OOB) challenge (either Push
+     * notification, SMS, or Voice).
+     *
+     * Requires your client to have the <b>MFA OOB</b> Grant Type enabled.
+     * See <a href="https://auth0.com/docs/clients/client-grant-types">Client Grant Types</a> to learn how to enable it.
+     *
+     * @param oobCode     the oob code received from the challenge request.
+     * @param mfaToken    the token received in the previous {@link #login(String, String, String)} response.
+     * @param bindingCode a code used to bind the side channel (used to deliver the challenge) with the main channel you are using to authenticate. This is usually an OTP-like code delivered as part of the challenge message.
+     * @return a request to configure and start that will yield {@link Credentials}
+     */
+    @NonNull
+    public AuthRequest loginWithOOBCode(@NonNull String oobCode, @NonNull String mfaToken, @Nullable String bindingCode) {
+        Map<String, Object> parameters = ParameterBuilder.newBuilder()
+                .setGrantType(KIVA_GRANT_TYPE_MFA_OOB)
+                .set(MFA_TOKEN_KEY, mfaToken)
+                .set(KIVA_OOB_CODE, oobCode)
+                .set(KIVA_BINDING_CODE, bindingCode)
+                .asDictionary();
+
+        return loginWithToken(parameters);
+    }
+
+
+    /**
+     * Verifies multi-factor authentication (MFA) using a recovery code.
+     * Some multi-factor authentication (MFA) providers (such as Guardian) support using a recovery
+     * code to login. Use this method to authenticate when the user's enrolled device is unavailable,
+     * or the user cannot receive the challenge or accept it due to connectivity issues.
+     *
+     * Requires your client to have the <b>MFA Recovery Code</b> Grant Type enabled.
+     * See <a href="https://auth0.com/docs/clients/client-grant-types">Client Grant Types</a> to learn how to enable it.
+     *
+     * @param recoveryCode the recovery code provided by the end-user
+     * @param mfaToken     the token received in the previous {@link #login(String, String, String)} response.
+     * @return a request to configure and start that will yield {@link Credentials}
+     */
+    @NonNull
+    public AuthRequest loginWithRecoveryCode(@NonNull String recoveryCode, @NonNull String mfaToken) {
+        Map<String, Object> parameters = ParameterBuilder.newBuilder()
+                .setGrantType(KIVA_GRANT_TYPE_MFA_RECOVERY_CODE)
+                .set(MFA_TOKEN_KEY, mfaToken)
+                .set(KIVA_RECOVERY_CODE, recoveryCode)
+                .asDictionary();
+
+        return loginWithToken(parameters);
+    }
+
+    /**
+     */
+    @NonNull
+    public ChallengeRequest multifactorChallenge(@NonNull String mfaToken) {
+        return multifactorChallenge(mfaToken, null, null, null);
+    }
+
+    /**
+     */
+    @NonNull
+    public ChallengeRequest multifactorChallenge(@NonNull String mfaToken, @Nullable List<String> types, @Nullable String channel, @Nullable String authenticatorId) {
+        HttpUrl url = HttpUrl.parse(auth0.getDomainUrl()).newBuilder()
+                .addPathSegment(KIVA_MFA_PATH)
+                .addPathSegment(KIVA_CHALLENGE_PATH)
+                .build();
+
+        ParameterBuilder builder = ParameterBuilder.newBuilder()
+                .set(MFA_TOKEN_KEY, mfaToken)
+                .set(KIVA_OOB_CHANNEL, channel)
+                .set(KIVA_AUTHENTICATOR_ID, authenticatorId)
+                .setClientId(getClientId());
+
+        if (types != null && !types.isEmpty()) {
+            builder.set(KIVA_CHALLENGE_TYPE, TextUtils.join(" ", types));
+        }
+
+        Map<String, Object> requestParameters = builder.asDictionary();
+
+        return factory.challengePOST(url, client, gson).addChallengeParameters(requestParameters);
+    }
+
 
     /**
      * Log in a user with a OAuth 'access_token' of a Identity Provider like Facebook or Twitter using <a href="https://auth0.com/docs/api/authentication#social-with-provider-s-access-token">'\oauth\access_token' endpoint</a>
